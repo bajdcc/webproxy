@@ -11,7 +11,7 @@ Set DNS to the computer where WebProxy is running.
 ## Features
 
 - [x] Proxy http/https request
-- [ ] Inject html
+- [x] Inject html by appending script
 - [ ] URL filter
 - [ ] Content filter
 - [ ] Support websocket
