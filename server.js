@@ -101,7 +101,7 @@ function fetchRemoteResponse(protocol, options, reqData, config) {
                     return;
                 }
                 ti++;
-                if (ti > 120)
+                if (ti > 360)
                     return _reject(new Error("timeout"));
                 setTimeout(rec, 1000);
             }, 1);

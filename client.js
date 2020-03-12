@@ -8,6 +8,7 @@ const http = require('http'),
     zlib = require('zlib'),
     logUtil = require('./lib/log'),
     async = require('async'),
+    brotliTorb = require('brotli'),
     { SD, SS, RD, RS } = require('./lib/dirs');
 
 
