@@ -1,6 +1,8 @@
 const http = require('http'),
   https = require('https'),
   async = require('async'),
+  fs = require('fs'),
+  path = require('path'),
   tls = require('tls'),
   crypto = require('crypto'),
   co = require('co'),
@@ -8,9 +10,10 @@ const http = require('http'),
   url = require('url'),
   certMgr = require('./lib/certMgr'),
   util = require('./lib/util'),
-  zlib = require('zlib'),
   logUtil = require('./lib/log'),
-  Readable = require('stream').Readable;
+  Readable = require('stream').Readable,
+  _ = require('lodash'),
+  {SD, SS, RD, RS} = require('./lib/dirs');
 const DEFAULT_CHUNK_COLLECT_THRESHOLD = 20 * 1024 * 1024; // about 20 mb
 class CommonReadableStream extends Readable {
   constructor(config) {
@@ -18,10 +21,14 @@ class CommonReadableStream extends Readable {
       highWaterMark: DEFAULT_CHUNK_COLLECT_THRESHOLD * 5
     });
   }
+
   _read(size) {
 
   }
 }
+
+let i = 0;
+
 /**
  * fetch remote response
  *
@@ -49,128 +56,64 @@ function fetchRemoteResponse(protocol, options, reqData, config) {
       throw new Error('chunkSizeThreshold is required');
     }
 
-    //send request
-    const proxyReq = (/https/i.test(protocol) ? https : http).request(options, (res) => {
-      res.headers = util.getHeaderFromRawHeaders(res.rawHeaders);
-      //deal response header
-      const statusCode = res.statusCode;
-      const resHeader = res.headers;
-      let resDataChunks = []; // array of data chunks or stream
-      const rawResChunks = []; // the original response chunks
-      let resDataStream = null;
-      let resSize = 0;
-      const finishCollecting = () => {
-        new Promise((fulfill, rejectParsing) => {
-          if (resDataStream) {
-            fulfill(resDataStream);
-          } else {
-            const serverResData = Buffer.concat(resDataChunks);
-            const originContentLen = util.getByteSize(serverResData);
-            // remove gzip related header, and ungzip the content
-            // note there are other compression types like deflate
-            const contentEncoding = resHeader['content-encoding'] || resHeader['Content-Encoding'];
-            const ifServerGzipped = /gzip/i.test(contentEncoding);
-            const isServerDeflated = /deflate/i.test(contentEncoding);
-            const isBrotlied = /br/i.test(contentEncoding);
+    if (/localhost/.test(options.hostname))
+      throw new Error('localhost');
 
-            /**
-             * when the content is unzipped, update the header content
-             */
-            const refactContentEncoding = () => {
-              if (contentEncoding) {
-                resHeader['x-anyproxy-origin-content-encoding'] = contentEncoding;
-                delete resHeader['content-encoding'];
-                delete resHeader['Content-Encoding'];
-              }
-            }
+    i++;
+    let t = i;
+    if (i > 10000)
+      throw new Error('limited');
 
-            // set origin content length into header
-            resHeader['x-anyproxy-origin-content-length'] = originContentLen;
+    t = (+new Date()).toString() + "_" + i;
+    const fnsd = path.join(SD, t + ".txt");
+    const fnss = path.join(SS, t + ".txt");
+    const fnrd = path.join(RD, t + ".txt");
+    const fnrs = path.join(RS, t + ".txt");
 
-            // only do unzip when there is res data
-            if (ifServerGzipped && originContentLen) {
-              refactContentEncoding();
-              zlib.gunzip(serverResData, (err, buff) => {
-                if (err) {
-                  rejectParsing(err);
-                } else {
-                  fulfill(buff);
-                }
-              });
-            } else if (isServerDeflated && originContentLen) {
-              refactContentEncoding();
-              zlib.inflateRaw(serverResData, (err, buff) => {
-                if (err) {
-                  rejectParsing(err);
-                } else {
-                  fulfill(buff);
-                }
-              });
-            } else if (isBrotlied && originContentLen) {
-              refactContentEncoding();
-
-              try {
-                // an Unit8Array returned by decompression
-                const result = brotliTorb.decompress(serverResData);
-                fulfill(Buffer.from(result));
-              } catch (e) {
-                rejectParsing(e);
-              }
-            } else {
-              fulfill(serverResData);
-            }
-          }
-        }).then((serverResData) => {
-          resolve({
-            statusCode,
-            header: resHeader,
-            body: serverResData,
-            rawBody: rawResChunks,
-            _res: res,
+    co(() => new Promise((_resolve, _reject) => {
+      fs.writeFile(fnsd, JSON.stringify({
+        protocol: protocol,
+        options: options,
+        reqData: reqData,
+        config: config
+      }), err => {
+        if (err) return _reject(err);
+        _resolve();
+      });
+    })).then(_data => new Promise((_resolve, _reject) => {
+      fs.writeFile(fnss, "", err => {
+        if (err) return _reject(err);
+        _resolve();
+      });
+    })).then(_data => new Promise((_resolve, _reject) => {
+      logUtil.printLog('watch: ' + t);
+      let ti = 0;
+      let st;
+      st = setTimeout(function rec() {
+        if (fs.existsSync(fnrs)) {
+          fs.unlink(fnrs, () => null);
+          fs.readFile(fnrd, (err, data) => {
+            if (err) throw err;
+            fs.unlink(fnrd, () => null);
+            logUtil.printLog('watch: ' + t + ", success");
+            _resolve(JSON.parse(Buffer.from(data).toString()));
           });
-        }).catch((e) => {
-          reject(e);
-        });
-      };
-
-      //deal response data
-      res.on('data', (chunk) => {
-        rawResChunks.push(chunk);
-        if (resDataStream) { // stream mode
-          resDataStream.push(chunk);
-        } else { // dataChunks
-          resSize += chunk.length;
-          resDataChunks.push(chunk);
-
-          // stop collecting, convert to stream mode
-          if (resSize >= config.chunkSizeThreshold) {
-            resDataStream = new CommonReadableStream();
-            while (resDataChunks.length) {
-              resDataStream.push(resDataChunks.shift());
-            }
-            resDataChunks = null;
-            finishCollecting();
-          }
+          return;
         }
-      });
-
-      res.on('end', () => {
-        if (resDataStream) {
-          resDataStream.push(null); // indicate the stream is end
-        } else {
-          finishCollecting();
-        }
-      });
-      res.on('error', (error) => {
-        logUtil.printLog('error happend in response:' + error, logUtil.T_ERR);
-        reject(error);
-      });
+        ti++;
+        if (ti > 120)
+          return _reject(new Error("timeout"));
+        setTimeout(rec, 1000);
+      }, 1);
+    })).then(_data => new Promise((_resolve, _reject) => {
+      resolve(_data);
+    })).catch(err => {
+      logUtil.printLog(color.green('err: ' + err));
+      reject(err);
     });
-
-    proxyReq.on('error', reject);
-    proxyReq.end(reqData);
   });
 }
+
 const server = {
   proxyPort: 80,
   proxyHttpsPort: 443,
@@ -178,14 +121,14 @@ const server = {
   close: function () {
     if (server.httpProxyServer)
       server.httpProxyServer.close((error) => {
-      if (error) {
-        console.error(error);
-        logUtil.printLog(`proxy server close FAILED : ${error.message}`, logUtil.T_ERR);
-      } else {
-        this.httpProxyServer = null;
-        logUtil.printLog(`proxy server closed at ${this.proxyHostname}:${this.proxyPort}`);
-      }
-    });
+        if (error) {
+          console.error(error);
+          logUtil.printLog(`proxy server close FAILED : ${error.message}`, logUtil.T_ERR);
+        } else {
+          this.httpProxyServer = null;
+          logUtil.printLog(`proxy server closed at ${this.proxyHostname}:${this.proxyPort}`);
+        }
+      });
     if (server.httpsProxyServer)
       server.httpsProxyServer.close((error) => {
         if (error) {
@@ -193,7 +136,7 @@ const server = {
           logUtil.printLog(`proxy server close FAILED : ${error.message}`, logUtil.T_ERR);
         } else {
           this.httpProxyServer = null;
-          logUtil.printLog(`proxy server closed at ${this.proxyHostname}:${this.proxyPort}`);
+          logUtil.printLog(`proxy server closed at ${this.proxyHostname}:${this.proxyHttpsPort}`);
         }
       });
   },
@@ -243,11 +186,12 @@ const server = {
      */
     const prepareRequestDetail = () => {
       const options = {
-        hostname: urlPattern.hostname || req.headers.host|| req.headers.Host,
+        hostname: urlPattern.hostname || req.headers.host || req.headers.Host,
         port: urlPattern.port || req.port || (/https/.test(protocol) ? 443 : 80),
         path,
         method: req.method,
-        headers: req.headers
+        headers: req.headers,
+        url: req.url
       };
 
       requestDetail = {
@@ -297,8 +241,8 @@ const server = {
         throw new Error('filed to get response header');
       }
       // if there is no transfer-encoding, set the content-length
-      if (transferEncoding !== 'chunked'
-        && !(responseBody instanceof CommonReadableStream)
+      if (transferEncoding !== 'chunked' &&
+        !(responseBody instanceof CommonReadableStream)
       ) {
         resHeader['Content-Length'] = util.getByteSize(responseBody);
       }
@@ -318,7 +262,7 @@ const server = {
     co(fetchReqData)
       .then(prepareRequestDetail)
       // invoke rule before sending request
-      .then(co.wrap(function *() {
+      .then(co.wrap(function* () {
         const userModifiedInfo = {};
         const finalReqDetail = {};
         ['protocol', 'requestOptions', 'requestData', 'response'].map((key) => {
@@ -327,7 +271,7 @@ const server = {
         return finalReqDetail;
       }))
       // route user config
-      .then(co.wrap(function *(userConfig) {
+      .then(co.wrap(function* (userConfig) {
         if (userConfig.response) {
           // user-assigned local response
           userConfig._directlyPassToRespond = true;
@@ -341,17 +285,15 @@ const server = {
             response: {
               statusCode: remoteResponse.statusCode,
               header: remoteResponse.header,
-              body: remoteResponse.body,
-              rawBody: remoteResponse.rawBody
-            },
-            _res: remoteResponse._res
+              body: Buffer.from(remoteResponse.body.data)
+            }
           };
         } else {
           throw new Error('lost response or requestOptions, failed to continue');
         }
       }))
       // invoke rule before responding to client
-      .then(co.wrap(function *(responseData) {
+      .then(co.wrap(function* (responseData) {
         if (responseData._directlyPassToRespond) {
           return responseData;
         } else if (responseData.response.body && responseData.response.body instanceof CommonReadableStream) { // in stream mode
@@ -361,11 +303,11 @@ const server = {
           return responseData;
         }
       }))
-      .then(co.wrap(function *(responseData) {
+      .then(co.wrap(function* (responseData) {
         const ct = responseData.response.header["Content-Type"] || responseData.response.header["content-type"];
-        if (ct && ct.match(/text\/html/)) {
+        /*if (ct && ct.match(/text\/html/)) {
           responseData.response.body = "<script src='//gateway.baidu.com/baidu/inject/all.js?v=190407'></script>" + responseData.response.body;
-        }
+        }*/
         return responseData;
       }))
       .then(sendFinalResponse)
@@ -386,7 +328,7 @@ const server = {
        // console.info('===> resbody in record', resourceInfo);
       })*/
       .catch((e) => {
-        logUtil.printLog(color.green('Send final response failed:' + e.message), logUtil.T_ERR);
+        logUtil.printLog(color.green('Send final response failed:' + JSON.stringify(e.message)), logUtil.T_ERR);
       });
   }
 };
@@ -419,6 +361,7 @@ async.series(
 );
 
 const createSecureContext = tls.createSecureContext || crypto.createSecureContext;
+
 function SNIPrepareCert(serverName, SNICallback) {
   let keyContent,
     crtContent,
@@ -457,6 +400,7 @@ function SNIPrepareCert(serverName, SNICallback) {
     }
   });
 }
+
 async.series(
   [
     //creat proxy server
@@ -521,10 +465,12 @@ process.on('uncaughtException', (err) => {
     } else {
       errorTipText += err;
     }
-  } catch (e) { }
+  } catch (e) {
+  }
   logUtil.printLog(errorTipText, logUtil.T_ERR);
   try {
     server && server.close();
-  } catch (e) { }
+  } catch (e) {
+  }
   process.exit();
 });
