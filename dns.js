@@ -56,7 +56,7 @@ function resolve(ip, msg, rinfo) { //响应
 
 server.on('message', (msg, rinfo) => {
     console.log(rinfo.address);
-    resolve("192.168.237.1", msg, rinfo); //解析与响应
+    resolve("127.0.0.1", msg, rinfo); //解析与响应
 });
 
 server.on('error', (err) => {

@@ -11,23 +11,11 @@ const http = require('http'),
     certMgr = require('./lib/certMgr'),
     util = require('./lib/util'),
     logUtil = require('./lib/log'),
-    Readable = require('stream').Readable,
     _ = require('lodash'),
-    { SD, SS, RD, RS } = require('./lib/dirs');
-const DEFAULT_CHUNK_COLLECT_THRESHOLD = 20 * 1024 * 1024; // about 20 mb
-class CommonReadableStream extends Readable {
-    constructor(config) {
-        super({
-            highWaterMark: DEFAULT_CHUNK_COLLECT_THRESHOLD * 5
-        });
-    }
-
-    _read(size) {
-
-    }
-}
+    { SD, SS, RD, RS, CommonReadableStream, DEFAULT_CHUNK_COLLECT_THRESHOLD } = require('./lib/dirs');
 
 let i = 0;
+let static_files = {};
 
 /**
  * fetch remote response
@@ -65,6 +53,41 @@ function fetchRemoteResponse(protocol, options, reqData, config) {
             throw new Error('limited');
 
         t = (+new Date()).toString() + "_" + i;
+        const ur = options.url;
+
+        if (static_files[ur]) {
+            t = static_files[ur];
+            const fnsd = path.join(SD, t + ".txt");
+            const fnss = path.join(SS, t + ".txt");
+            const fnrd = path.join(RD, t + ".txt");
+            const fnrs = path.join(RS, t + ".txt");
+            co(() => new Promise((_resolve, _reject) => {
+                logUtil.printLog('cache: ' + t);
+                let ti = 0;
+                let st;
+                st = setTimeout(function rec() {
+                    if (fs.existsSync(fnrd)) {
+                        fs.readFile(fnrd, (err, data) => {
+                            if (err) throw err;
+                            logUtil.printLog('catch: ' + t + ", success");
+                            const obj = JSON.parse(Buffer.from(data).toString());
+                            _resolve(obj);
+                        });
+                        return;
+                    }
+                    ti++;
+                    if (ti > 360)
+                        return _reject(new Error("timeout"));
+                    setTimeout(rec, 1000);
+                }, 1);
+            })).then(_data => new Promise((_resolve, _reject) => {
+                resolve(_data);
+            })).catch(err => {
+                logUtil.printLog(color.green('err: ' + err));
+                reject(err);
+            });
+            return;
+        }
         const fnsd = path.join(SD, t + ".txt");
         const fnss = path.join(SS, t + ".txt");
         const fnrd = path.join(RD, t + ".txt");
@@ -94,9 +117,14 @@ function fetchRemoteResponse(protocol, options, reqData, config) {
                     fs.unlink(fnrs, () => null);
                     fs.readFile(fnrd, (err, data) => {
                         if (err) throw err;
-                        fs.unlink(fnrd, () => null);
                         logUtil.printLog('watch: ' + t + ", success");
-                        _resolve(JSON.parse(Buffer.from(data).toString()));
+                        if (/\.m3u8$/.test(ur)) {
+                            static_files[ur] = t;
+                        } else {
+                            fs.unlink(fnrd, () => null);
+                        }
+                        const obj = JSON.parse(Buffer.from(data).toString());
+                        _resolve(obj);
                     });
                     return;
                 }

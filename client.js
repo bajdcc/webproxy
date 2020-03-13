@@ -9,7 +9,7 @@ const http = require('http'),
     logUtil = require('./lib/log'),
     async = require('async'),
     brotliTorb = require('brotli'),
-    { SD, SS, RD, RS } = require('./lib/dirs');
+    { SD, SS, RD, RS, CommonReadableStream, DEFAULT_CHUNK_COLLECT_THRESHOLD } = require('./lib/dirs');
 
 
 /**
@@ -163,7 +163,7 @@ setTimeout(function rec() {
             return;
         }
         if (!ds.length) {
-            logUtil.printLog(color.green('waiting'));
+            //logUtil.printLog(color.green('waiting'));
             setTimeout(rec, 1000);
             return;
         }
